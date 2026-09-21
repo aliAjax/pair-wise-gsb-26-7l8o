@@ -1,158 +1,137 @@
+import { useMemo, useState } from "react";
 import "./styles.css";
+import { useAppState } from "./ui/useAppState";
+import { AssessmentDesk, type CorrectionTarget } from "./ui/components/AssessmentDesk";
+import { CaseArchive } from "./ui/components/CaseArchive";
+import { RetestBoard } from "./ui/components/RetestBoard";
+import { PlanBoard } from "./ui/components/PlanBoard";
+import { Rejections } from "./ui/components/Rejections";
+import { resetToSeed } from "./state/store";
+import { SCALE_VERSIONS } from "./domain/scales";
+import { RETEST_INTERVAL_DAYS, daysBetween, lastValidAssessment, todayISO } from "./rules/retest";
 
-const project = {
-  "id": "hxwl-12",
-  "port": 5112,
-  "title": "心理咨询个案记录",
-  "subtitle": "会谈时间线、风险等级与干预目标记录",
-  "stack": "React + Vite + TypeScript + CSS",
-  "theme": [
-    "#7c3aed",
-    "#0f766e",
-    "#f59e0b"
-  ],
-  "domain": "心理咨询",
-  "users": [
-    "咨询师",
-    "督导",
-    "机构管理员"
-  ],
-  "metrics": [
-    "活跃个案",
-    "高风险关注",
-    "本周会谈",
-    "目标推进"
-  ],
-  "filters": [
-    "焦虑",
-    "亲密关系",
-    "亲子",
-    "职业压力"
-  ],
-  "fields": [
-    "来访者代号",
-    "咨询主题",
-    "会谈日期",
-    "主要困扰",
-    "情绪状态",
-    "干预方法",
-    "下次目标"
-  ],
-  "records": [
-    [
-      "C-042",
-      "焦虑",
-      "中风险",
-      "睡眠改善，练习呼吸放松"
-    ],
-    [
-      "C-119",
-      "亲密关系",
-      "稳定",
-      "识别沟通中的回避模式"
-    ],
-    [
-      "C-203",
-      "职业压力",
-      "关注",
-      "设定下周边界练习"
-    ]
-  ]
-};
+type Tab = "desk" | "archive" | "retest" | "plans" | "rejections";
 
-const statusColors = ["status-ok", "status-watch", "status-danger"];
-
-function MetricCard({ label, value, index }: { label: string; value: string; index: number }) {
-  return (
-    <article className="metric-card">
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <i className={statusColors[index % statusColors.length]} />
-    </article>
-  );
-}
+const TABS: Array<{ key: Tab; label: string }> = [
+  { key: "desk", label: "测评录入" },
+  { key: "archive", label: "个案档案" },
+  { key: "retest", label: "复测跟踪" },
+  { key: "plans", label: "联系计划" },
+  { key: "rejections", label: "拒绝记录" },
+];
 
 function App() {
-  const values = project.metrics.map((metric: string, index: number) => {
-    const base = [84, 12, 31, 7][index % 4];
-    return String(base + index * 3);
-  });
+  const state = useAppState();
+  const [tab, setTab] = useState<Tab>("desk");
+  const [correction, setCorrection] = useState<CorrectionTarget | null>(null);
+  const today = todayISO();
+
+  const metrics = useMemo(() => {
+    const scaleIds = [...new Set(SCALE_VERSIONS.map((entry) => entry.scaleId))];
+    const highRisk = state.clients.filter((client) =>
+      state.assessments.some(
+        (entry) => entry.clientId === client.id && entry.risk === "high" && !entry.supersededById,
+      ),
+    ).length;
+    const pendingPlans = state.plans.filter((plan) => plan.status === "pending").length;
+    const overduePlans = state.plans.filter(
+      (plan) => plan.status === "pending" && plan.dueDate < today,
+    ).length;
+    const frozenRetest = state.clients.reduce((sum, client) => {
+      const blocked = scaleIds.some((scaleId) => {
+        const last = lastValidAssessment(state.assessments, client.id, scaleId);
+        return last !== undefined && daysBetween(last.assessDate, today) < RETEST_INTERVAL_DAYS;
+      });
+      return sum + (blocked ? 1 : 0);
+    }, 0);
+    return { highRisk, pendingPlans, overduePlans, frozenRetest };
+  }, [state, today]);
+
+  function openCorrection(target: CorrectionTarget) {
+    setCorrection(target);
+    setTab("desk");
+  }
+
+  function exitCorrection() {
+    setCorrection(null);
+  }
 
   return (
     <main className="app-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">{project.id} · port {project.port}</p>
-          <h1>{project.title}</h1>
-          <p className="subtitle">{project.subtitle}</p>
+          <p className="eyebrow">hxwl-12 · 测评与复测跟踪台</p>
+          <h1>心理咨询个案测评管理</h1>
+          <p className="subtitle">
+            按量表版本录入条目，正反向计分生成总分与风险等级；高风险或升级强制登记联系计划；
+            同量表七天内禁止复测；已完成测评冻结，更正生成新版本并完整保留原数据。
+          </p>
         </div>
         <div className="stack-card">
-          <span>技术栈</span>
-          <strong>{project.stack}</strong>
+          <span>技术栈（未新增依赖）</span>
+          <strong>React 19 + Vite + TypeScript</strong>
+          <span className="muted-note">领域数据 / 计算规则 / 界面分层 · localStorage 持久化</span>
+          <button className="reset-btn" onClick={resetToSeed}>
+            恢复演示数据
+          </button>
         </div>
       </section>
 
       <section className="metrics-grid">
-        {project.metrics.map((metric: string, index: number) => (
-          <MetricCard key={metric} label={metric} value={values[index]} index={index} />
+        <article className="metric-card">
+          <span>活跃个案</span>
+          <strong>{state.clients.length}</strong>
+          <i className="status-ok" />
+        </article>
+        <article className="metric-card">
+          <span>当前高风险个案</span>
+          <strong>{metrics.highRisk}</strong>
+          <i className="status-danger" />
+        </article>
+        <article className="metric-card">
+          <span>待完成联系计划（逾期 {metrics.overduePlans}）</span>
+          <strong>{metrics.pendingPlans}</strong>
+          <i className="status-watch" />
+        </article>
+        <article className="metric-card">
+          <span>复测冻结中个案</span>
+          <strong>{metrics.frozenRetest}</strong>
+          <i className="status-watch" />
+        </article>
+      </section>
+
+      <nav className="tab-bar">
+        {TABS.map((entry) => (
+          <button
+            key={entry.key}
+            className={tab === entry.key ? "tab active" : "tab"}
+            onClick={() => {
+              setTab(entry.key);
+              if (entry.key !== "desk") setCorrection(null);
+            }}
+          >
+            {entry.label}
+            {entry.key === "rejections" && state.rejections.length > 0 && (
+              <b className="tab-badge">{state.rejections.length}</b>
+            )}
+          </button>
         ))}
-      </section>
+      </nav>
 
-      <section className="workspace">
-        <aside className="panel narrow">
-          <h2>角色</h2>
-          <div className="chips">
-            {project.users.map((user: string) => (
-              <span key={user}>{user}</span>
-            ))}
-          </div>
-          <h2>筛选</h2>
-          <div className="chips muted">
-            {project.filters.map((filter: string) => (
-              <button key={filter}>{filter}</button>
-            ))}
-          </div>
-        </aside>
-
-        <section className="panel">
-          <div className="section-heading">
-            <div>
-              <p>{project.domain}</p>
-              <h2>记录字段</h2>
-            </div>
-            <button className="primary-action">新增记录</button>
-          </div>
-          <div className="field-grid">
-            {project.fields.map((field: string) => (
-              <label key={field}>
-                <span>{field}</span>
-                <input placeholder={"填写" + field} />
-              </label>
-            ))}
-          </div>
-        </section>
-      </section>
-
-      <section className="records panel">
-        <div className="section-heading">
-          <div>
-            <p>示例数据</p>
-            <h2>近期记录</h2>
-          </div>
-          <button>导出摘要</button>
-        </div>
-        <div className="record-list">
-          {project.records.map((record: string[], index: number) => (
-            <article key={record.join("-")} className="record-card">
-              <div className="record-index">{String(index + 1).padStart(2, "0")}</div>
-              <div>
-                <h3>{record[0]}</h3>
-                <p>{record.slice(1).join(" · ")}</p>
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
+      {tab === "desk" && (
+        <AssessmentDesk
+          state={state}
+          correction={correction}
+          onCorrectionDone={() => {
+            exitCorrection();
+            setTab("archive");
+          }}
+        />
+      )}
+      {tab === "archive" && <CaseArchive state={state} onCorrect={openCorrection} />}
+      {tab === "retest" && <RetestBoard state={state} />}
+      {tab === "plans" && <PlanBoard state={state} />}
+      {tab === "rejections" && <Rejections state={state} />}
     </main>
   );
 }
